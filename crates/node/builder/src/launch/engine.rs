@@ -14,7 +14,7 @@ use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_db_api::{database_metrics::DatabaseMetrics, Database};
 use reth_engine_service::service::{ChainEvent, EngineService};
 use reth_engine_tree::{
-    engine::{EngineApiRequest, EngineRequestHandler},
+    engine::{EngineApiRequest, EngineRequestHandler, ExecutedBlockRequest},
     tree::TreeConfig,
 };
 use reth_engine_util::EngineMessageStreamExt;
@@ -187,6 +187,12 @@ where
         let event_sender = EventSender::default();
 
         let beacon_engine_handle = ConsensusEngineHandle::new(consensus_engine_tx.clone());
+        let (engine_api_tx, mut engine_api_rx) = unbounded_channel::<
+            EngineApiRequest<
+                <Types as NodeTypes>::Payload,
+                <Types as NodeTypes>::Primitives,
+            >
+        >();
 
         // extract the jwt secret from the args if possible
         let jwt_secret = ctx.auth_jwt_secret()?;
@@ -259,7 +265,7 @@ where
             )),
         );
 
-        let RpcHandle { rpc_server_handles, rpc_registry, engine_events, beacon_engine_handle } =
+        let RpcHandle { rpc_server_handles, rpc_registry, engine_events, beacon_engine_handle, engine_api_tx: _ } =
             add_ons.launch_add_ons(add_ons_ctx).await?;
 
         // Run consensus engine to completion
@@ -293,7 +299,12 @@ where
                     payload = built_payloads.select_next_some() => {
                         if let Some(executed_block) = payload.executed_block() {
                             debug!(target: "reth::cli", block=?executed_block.recovered_block().num_hash(),  "inserting built payload");
-                            engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(executed_block).into());
+                            engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(EngineApiRequest::InsertExecutedBlock(ExecutedBlockRequest::new(executed_block)).into());
+                        }
+                    }
+                    req = engine_api_rx.recv() => {
+                        if let Some(req) = req {
+                            engine_service.orchestrator_mut().handler_mut().handler_mut().on_event(req.into());
                         }
                     }
                     event = engine_service.next() => {
@@ -358,6 +369,7 @@ where
                 rpc_registry,
                 engine_events,
                 beacon_engine_handle,
+                engine_api_tx: Some(engine_api_tx.clone()),
             },
         };
         // Notify on node started

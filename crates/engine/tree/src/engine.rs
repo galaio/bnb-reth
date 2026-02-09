@@ -9,6 +9,7 @@ use alloy_primitives::B256;
 use futures::{Stream, StreamExt};
 use reth_chain_state::ExecutedBlockWithTrieUpdates;
 use reth_engine_primitives::{BeaconEngineMessage, ConsensusEngineEvent};
+use reth_errors::RethResult;
 use reth_ethereum_primitives::EthPrimitives;
 use reth_payload_primitives::PayloadTypes;
 use reth_primitives_traits::{Block, NodePrimitives, RecoveredBlock};
@@ -18,7 +19,7 @@ use std::{
     sync::mpsc::Sender,
     task::{ready, Context, Poll},
 };
-use tokio::sync::mpsc::UnboundedReceiver;
+use tokio::sync::{mpsc::UnboundedReceiver, oneshot};
 
 /// A [`ChainHandler`] that advances the chain based on incoming requests (CL engine API).
 ///
@@ -240,21 +241,37 @@ impl EngineApiKind {
     }
 }
 
+/// A request to insert an already executed block, e.g. via payload building.
+#[derive(Debug)]
+pub struct ExecutedBlockRequest<N: NodePrimitives> {
+    /// The executed block with trie updates.
+    pub block: ExecutedBlockWithTrieUpdates<N>,
+    /// The sender for returning the result of the request.
+    pub tx: Option<oneshot::Sender<RethResult<()>>>,
+}
+
+impl<N: NodePrimitives> ExecutedBlockRequest<N> {
+    /// Creates a new `ExecutedBlockRequest`.
+    pub fn new(block: ExecutedBlockWithTrieUpdates<N>) -> Self {
+        Self { block, tx: None }
+    }
+}
+
 /// The request variants that the engine API handler can receive.
 #[derive(Debug)]
 pub enum EngineApiRequest<T: PayloadTypes, N: NodePrimitives> {
     /// A request received from the consensus engine.
     Beacon(BeaconEngineMessage<T>),
     /// Request to insert an already executed block, e.g. via payload building.
-    InsertExecutedBlock(ExecutedBlockWithTrieUpdates<N>),
+    InsertExecutedBlock(ExecutedBlockRequest<N>),
 }
 
 impl<T: PayloadTypes, N: NodePrimitives> Display for EngineApiRequest<T, N> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Beacon(msg) => msg.fmt(f),
-            Self::InsertExecutedBlock(block) => {
-                write!(f, "InsertExecutedBlock({:?})", block.recovered_block().num_hash())
+            Self::InsertExecutedBlock(req) => {
+                write!(f, "InsertExecutedBlock({:?})", req.block.recovered_block().num_hash())
             }
         }
     }

@@ -3,7 +3,7 @@ use crate::{
     chain::FromOrchestrator,
     engine::{DownloadRequest, EngineApiEvent, EngineApiKind, EngineApiRequest, FromEngine},
     persistence::PersistenceHandle,
-    tree::{error::InsertPayloadError, metrics::EngineApiMetrics, payload_validator::TreeCtx},
+    tree::{error::{InsertBlockErrorKind, InsertPayloadError}, metrics::EngineApiMetrics, payload_validator::TreeCtx},
 };
 use alloy_consensus::BlockHeader;
 use alloy_eips::{eip1898::BlockWithParent, BlockNumHash, NumHash};
@@ -31,9 +31,7 @@ use reth_payload_primitives::{
 };
 use reth_primitives_traits::{NodePrimitives, RecoveredBlock, SealedBlock, SealedHeader};
 use reth_provider::{
-    providers::ConsistentDbView, BlockNumReader, BlockReader, DBProvider, DatabaseProviderFactory,
-    HashedPostStateProvider, ProviderError, StateProviderBox, StateProviderFactory, StateReader,
-    StateRootProvider, TransactionVariant,
+    BlockNumReader, BlockReader, DBProvider, DatabaseProviderFactory, ExecutionOutcome, HashedPostStateProvider, ProviderError, StateProviderBox, StateProviderFactory, StateReader, StateRootProvider, TransactionVariant, providers::ConsistentDbView
 };
 use reth_revm::database::StateProviderDatabase;
 use reth_stages_api::ControlFlow;
@@ -1268,10 +1266,16 @@ where
             },
             FromEngine::Request(request) => {
                 match request {
-                    EngineApiRequest::InsertExecutedBlock(block) => {
+                    EngineApiRequest::InsertExecutedBlock(req) => {
+                        let block = &req.block;
                         let block_num_hash = block.recovered_block().num_hash();
                         if block_num_hash.number <= self.state.tree_state.canonical_block_number() {
                             // outdated block that can be skipped
+                            if let Some(tx) = req.tx {
+                                if let Err(err) = tx.send(Ok(())) {
+                                    error!(target: "engine::tree", "Failed to send result of inserted executed block: {err:?}");
+                                }
+                            }
                             return Ok(());
                         }
 
@@ -1289,8 +1293,13 @@ where
 
                         self.state.tree_state.insert_executed(block.clone());
                         self.metrics.engine.inserted_already_executed_blocks.increment(1);
+                        if let Some(tx) = req.tx {
+                            if let Err(err) = tx.send(Ok(())) {
+                                error!(target: "engine::tree", "Failed to send result of inserted executed block: {err:?}");
+                            }
+                        }
                         self.emit_event(EngineApiEvent::BeaconConsensus(
-                            ConsensusEngineEvent::CanonicalBlockAdded(block, now.elapsed()),
+                            ConsensusEngineEvent::CanonicalBlockAdded(req.block, now.elapsed()),
                         ));
                     }
                     EngineApiRequest::Beacon(request) => {

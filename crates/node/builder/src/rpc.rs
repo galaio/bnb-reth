@@ -34,6 +34,8 @@ use reth_rpc_engine_api::{capabilities::EngineCapabilities, EngineApi};
 use reth_rpc_eth_types::{cache::cache_new_blocks_task, EthConfig, EthStateCache};
 use reth_tokio_util::EventSender;
 use reth_tracing::tracing::{debug, info};
+use reth_engine_tree::engine::EngineApiRequest;
+use tokio::sync::mpsc::UnboundedSender;
 use std::{
     fmt::{self, Debug},
     future::Future,
@@ -329,6 +331,15 @@ pub struct RpcHandle<Node: FullNodeComponents, EthApi: EthApiTypes> {
     pub engine_events: EventSender<ConsensusEngineEvent<<Node::Types as NodeTypes>::Primitives>>,
     /// Handle to the beacon consensus engine.
     pub beacon_engine_handle: ConsensusEngineHandle<<Node::Types as NodeTypes>::Payload>,
+    /// Transaction channel for engine API requests
+    pub engine_api_tx: Option<
+        UnboundedSender<
+            EngineApiRequest<
+                <Node::Types as NodeTypes>::Payload,
+                <Node::Types as NodeTypes>::Primitives,
+            >,
+        >,
+    >,
 }
 
 impl<Node: FullNodeComponents, EthApi: EthApiTypes> Clone for RpcHandle<Node, EthApi> {
@@ -338,6 +349,7 @@ impl<Node: FullNodeComponents, EthApi: EthApiTypes> Clone for RpcHandle<Node, Et
             rpc_registry: self.rpc_registry.clone(),
             engine_events: self.engine_events.clone(),
             beacon_engine_handle: self.beacon_engine_handle.clone(),
+            engine_api_tx: self.engine_api_tx.clone(),
         }
     }
 }
@@ -938,6 +950,7 @@ where
             rpc_registry: registry,
             engine_events,
             beacon_engine_handle: engine_handle,
+            engine_api_tx: None,
         })
     }
 
